@@ -1,36 +1,53 @@
 version: "3.9"
 
+networks:
+  chatwoot-network:
+    driver: bridge
+
 services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    networks:
+      - chatwoot-network
     environment:
       POSTGRES_DB: chatwoot_production
       POSTGRES_USER: chatwoot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatwoot_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U chatwoot -d chatwoot_production"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    networks:
+      - chatwoot-network
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
 
   chatwoot-web:
     image: ghcr.io/chatwoot/chatwoot:latest
     restart: unless-stopped
+    networks:
+      - chatwoot-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,28 +57,79 @@ services:
     environment:
       RAILS_ENV: production
       NODE_ENV: production
+      DATABASE_URL: postgresql://chatwoot:${POSTGRES_PASSWORD:-chatwoot_password}@postgres:5432/chatwoot_production
+      REDIS_URL: redis://redis:6379
+      # Configurações do MinIO/S3
+      ACTIVE_STORAGE_SERVICE: s3_compatible
+      S3_BUCKET_NAME: MinIO_Chatwoot
+      AWS_ACCESS_KEY_ID: QUldE0QBaeRvlZeR58MU
+      AWS_SECRET_ACCESS_KEY: 32sK70x7CXUae0VlM2zdZzQrNeOO2TwWjwwPZkGa
+      AWS_REGION: us-east-1
+      S3_ENDPOINT: https://s3axm.infinityai.com.br
+      S3_FORCE_PATH_STYLE: "true"
+      # Configurações SMTP
+      MAILER_SENDER_EMAIL: alemosrj@gmail.com
+      SMTP_ADDRESS: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USERNAME: alemosrj@gmail.com
+      SMTP_PASSWORD: dbeidatbqjhhathn
+      SMTP_AUTHENTICATION: plain
+      SMTP_ENABLE_STARTTLS_AUTO: "true"
     ports:
       - "3000:3000"
     volumes:
       - storage:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
 
   chatwoot-worker:
     image: ghcr.io/chatwoot/chatwoot:latest
     restart: unless-stopped
+    networks:
+      - chatwoot-network
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      chatwoot-web:
         condition: service_healthy
     command: bundle exec sidekiq -C config/sidekiq.yml
     env_file: .env
     environment:
       RAILS_ENV: production
       NODE_ENV: production
+      DATABASE_URL: postgresql://chatwoot:${POSTGRES_PASSWORD:-chatwoot_password}@postgres:5432/chatwoot_production
+      REDIS_URL: redis://redis:6379
+      # Configurações do MinIO/S3
+      ACTIVE_STORAGE_SERVICE: s3_compatible
+      S3_BUCKET_NAME: MinIO_Chatwoot
+      AWS_ACCESS_KEY_ID: QUldE0QBaeRvlZeR58MU
+      AWS_SECRET_ACCESS_KEY: 32sK70x7CXUae0VlM2zdZzQrNeOO2TwWjwwPZkGa
+      AWS_REGION: us-east-1
+      S3_ENDPOINT: https://s3axm.infinityai.com.br
+      S3_FORCE_PATH_STYLE: "true"
     volumes:
       - storage:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bundle exec rails runner 'puts Sidekiq.redis_info' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres-data:
+    driver: local
   redis-data:
+    driver: local
   storage:
+    driver: local
